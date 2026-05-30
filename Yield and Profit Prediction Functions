@@ -1,0 +1,64 @@
+# @title 4. Yield and Profit Prediction Functions
+# --- NEWLY ADDED CODE ---
+
+# Assumption: Yield is estimated in 'tons per acre'.
+# This is a highly simplified model; real yield prediction requires complex agro-climatic models.
+def estimate_yield(N, P, K, rainfall):
+    # Base yield in tons/acre (illustrative average)
+    base_yield_tons_per_acre = 1.5 # e.g., 1.5 tons/acre as a starting point
+
+    # Factors influencing yield (simplified, scaled to affect base_yield)
+    # N, P, K ranges are typically from soil tests (e.g., kg/hectare or ppm)
+    # For simplicity, we'll use the dataset's scale (0-140 for N,P,K)
+    # and assume optimal ranges around 60-90 for N, 40-60 for P, 30-50 for K
+    # Rainfall is in mm, so suitable range might be 100-250mm during growth phase
+
+    # N factor: optimal around 70, decreases if too low/high
+    n_factor = 1.0
+    if N < 50: n_factor = 0.7 + (N/50) * 0.3 # Lower if very low N
+    elif N > 90: n_factor = 1.0 - ((N-90)/50) * 0.2 # Slight decrease if too high N
+
+    # P factor: optimal around 50
+    p_factor = 1.0
+    if P < 30: p_factor = 0.6 + (P/30) * 0.4
+    elif P > 70: p_factor = 1.0 - ((P-70)/50) * 0.1
+
+    # K factor: optimal around 40
+    k_factor = 1.0
+    if K < 25: k_factor = 0.7 + (K/25) * 0.3
+    elif K > 60: k_factor = 1.0 - ((K-60)/50) * 0.1
+
+    # Rainfall factor: optimal around 150-200mm, drops if too low or excessively high
+    rain_factor = 1.0
+    if rainfall < 100: rain_factor = 0.5 + (rainfall/100) * 0.5
+    elif rainfall > 250: rain_factor = 1.0 - ((rainfall-250)/150) * 0.2
+
+    # Combine factors multiplicatively for simplicity
+    estimated_yield_final = base_yield_tons_per_acre * n_factor * p_factor * k_factor * rain_factor
+
+    # Ensure yield is not negative or excessively high
+    estimated_yield_final = max(0.1, min(estimated_yield_final, 5.0)) # Cap between 0.1 and 5 tons/acre
+    return round(estimated_yield_final, 2)
+
+# Illustrative crop prices in INR (₹) per ton
+# These are approximate values and can vary significantly based on market, region, and quality.
+crop_price = {
+    'Rice': 25000, 'Maize': 18000, 'ChickPea': 45000, 'KidneyBeans': 55000, 'PigeonPeas': 48000,
+    'MothBeans': 40000, 'MungBean': 50000, 'Blackgram': 46000, 'Lentil': 47000, 'Pomegranate': 80000,
+    'Banana': 15000, 'Mango': 30000, 'Grapes': 70000, 'Watermelon': 10000, 'Muskmelon': 12000,
+    'Apple': 120000, 'Orange': 25000, 'Papaya': 18000, 'Coconut': 22000, 'Cotton': 60000,
+    'Jute': 10000, 'Coffee': 150000, 'Sugarcane': 3000, 'Arecanut': 100000, 'Wheat': 22000 # Added Wheat
+    # Add more crops and prices as needed
+}
+
+# Assumption: Profit is calculated as yield (tons/acre) * price (₹/ton).
+# This is a gross profit estimate, not accounting for cultivation costs.
+def calculate_profit(yield_value_tons_per_acre, crop_name, crop_price_dict):
+    if crop_name in crop_price_dict:
+        # Profit will be in ₹ per acre
+        profit = yield_value_tons_per_acre * crop_price_dict[crop_name]
+        return round(profit, 2)
+    else:
+        return "Price not available"
+
+# --- END NEWLY ADDED CODE ---
