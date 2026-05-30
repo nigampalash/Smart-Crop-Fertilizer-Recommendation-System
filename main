@@ -1,0 +1,714 @@
+import ipywidgets as widgets
+from IPython.display import display, clear_output
+import pandas as pd
+import joblib
+import os
+import shap # Import SHAP library
+import numpy as np # Import numpy for SHAP operations
+import matplotlib.pyplot as plt # Import for displaying plots
+import torch # Import torch for TabNet
+from pytorch_tabnet.tab_model import TabNetClassifier # Ensure TabNetClassifier is imported
+
+# Define the persistent path for the model in Google Drive
+model_drive_path = '/content/drive/MyDrive/final_crop_model.pkl'
+# --- NEWLY ADDED CODE ---
+tabnet_model_drive_path = '/content/drive/MyDrive/final_tabnet_model.zip' # TabNet saves as .zip
+# --- END NEWLY ADDED CODE ---
+
+# Ensure the Google Drive directory exists
+os.makedirs(os.path.dirname(model_drive_path), exist_ok=True)
+
+# Check if the model exists in Google Drive, if not, save it from memory
+if not os.path.exists(model_drive_path):
+    try:
+        # Assuming 'rf_model' is in globals from previous training steps
+        if 'rf_model' in globals():
+            joblib.dump(globals()['rf_model'], model_drive_path)
+            print(f"[INFO] Random Forest model from kernel memory saved to {model_drive_path} for persistent storage.")
+        else:
+            display(widgets.HTML("<b><font color='red'>Error: 'rf_model' not found in kernel memory.</font></b>"))
+            display(widgets.HTML("<b><font color='red'>Please ensure the Random Forest model training cells were executed correctly.</font></b>"))
+            # raise FileNotFoundError("rf_model not found in kernel memory.") # Not raising to allow continued execution if RF not critical
+    except Exception as e:
+        display(widgets.HTML(f"<b><font color='red'>ERROR: Failed to save Random Forest model to Google Drive: {e}</font></b>"))
+        # raise # Re-raise the error
+
+# --- NEWLY ADDED CODE ---
+# Save TabNet model if it exists and hasn't been saved
+if 'tabnet_model' in globals() and not os.path.exists(tabnet_model_drive_path):
+    try:
+        tabnet_model.save_model(tabnet_model_drive_path.replace('.zip', '')) # TabNet save_model expects directory path
+        os.rename(tabnet_model_drive_path.replace('.zip', '') + '.zip', tabnet_model_drive_path) # Rename to desired .zip path
+        print(f"[INFO] TabNet model from kernel memory saved to {tabnet_model_drive_path} for persistent storage.")
+    except Exception as e:
+        display(widgets.HTML(f"<b><font color='red'>ERROR: Failed to save TabNet model to Google Drive: {e}</font></b>"))
+# --- END NEWLY ADDED CODE ---
+
+# Load the pre-trained models from the persistent path
+try:
+    rf_model_loaded = joblib.load(model_drive_path)
+    print(f"[INFO] Random Forest model loaded from '{model_drive_path}'")
+except FileNotFoundError:
+    display(widgets.HTML(f"<b><font color='red'>Error: Random Forest model file '{model_drive_path}' not found.</font></b>"))
+    rf_model_loaded = None
+except Exception as e:
+    display(widgets.HTML(f"<b><font color='red'>ERROR: Error loading Random Forest model: {e}</font></b>"))
+    rf_model_loaded = None
+
+# --- NEWLY ADDED CODE ---
+try:
+    # Need to re-instantiate TabNetClassifier first to load weights
+    tabnet_model_loaded = TabNetClassifier(
+        optimizer_fn=torch.optim.Adam,
+        optimizer_params=dict(lr=2e-2),
+        scheduler_params={"step_size":50, "gamma":0.9},
+        scheduler_fn=torch.optim.lr_scheduler.StepLR,
+        mask_type='entmax',
+        verbose=0
+    )
+    tabnet_model_loaded.load_model(tabnet_model_drive_path) # Load the .zip file directly
+    print(f"[INFO] TabNet model loaded from '{tabnet_model_drive_path}'")
+except FileNotFoundError:
+    display(widgets.HTML(f"<b><font color='red'>Error: TabNet model file '{tabnet_model_drive_path}' not found.</font></b>"))
+    tabnet_model_loaded = None
+except Exception as e:
+    display(widgets.HTML(f"<b><font color='red'>ERROR: Error loading TabNet model: {e}</font></b>"))
+# --- END NEWLY ADDED CODE ---
+
+# --- Initialize SHAP Explainer for the loaded Random Forest model ---
+# X_train is needed for background data for KernelExplainer
+explainer_rf = None # Initialize to None
+if 'X_train' in globals() and not X_train.empty and rf_model_loaded:
+    try:
+        explainer_rf = shap.TreeExplainer(rf_model_loaded, X_train)
+        print("[INFO] Random Forest SHAP TreeExplainer initialized.")
+    except Exception as e:
+        print(f"[ERROR] Failed to initialize Random Forest SHAP TreeExplainer: {e}")
+else:
+    print("Warning: X_train not available or Random Forest model not loaded. SHAP explainer for RF may not be fully initialized.")
+    if rf_model_loaded:
+        try:
+            explainer_rf = shap.TreeExplainer(rf_model_loaded)
+            print("[INFO] Random Forest SHAP TreeExplainer initialized without background data (may be less accurate).")
+        except Exception as e:
+            print(f"[ERROR] Failed to initialize Random Forest SHAP TreeExplainer (even without background data): {e}")
+
+# --- Initialize SHAP Explainer for TabNet model ---
+# This part assumes X_train and le are available globally from previous cells.
+def predict_fn_tabnet(X_val):
+    if tabnet_model_loaded:
+        tabnet_model_loaded.network.eval()
+        with torch.no_grad():
+            return tabnet_model_loaded.predict_proba(X_val)
+    return None
+
+explainer_tabnet = None # Initialize to None
+if 'X_train' in globals() and not X_train.empty and tabnet_model_loaded and 'scaler' in globals():
+    try:
+        # Ensure background data is scaled similar to X_test_scaled for prediction
+        background_data_tabnet_raw = X_train.sample(min(100, len(X_train)), random_state=42)
+        background_data_tabnet_scaled = globals()['scaler'].transform(background_data_tabnet_raw)
+        explainer_tabnet = shap.KernelExplainer(predict_fn_tabnet, background_data_tabnet_scaled)
+        print("[INFO] TabNet SHAP KernelExplainer initialized with scaled background data.")
+    except Exception as e:
+        print(f"[ERROR] Failed to initialize TabNet SHAP KernelExplainer: {e}")
+else:
+    print("Warning: X_train, TabNet model, or StandardScaler not available. SHAP explainer for TabNet may not be initialized.")
+
+
+# Define eco-friendly fertilizer recommendation function
+def recommend_fertilizer(N, P, K):
+    advice = []
+    eco_friendly_suggestions = []
+    soil_condition = []
+
+    if N < 50:
+        soil_condition.append("Low Nitrogen detected")
+        eco_friendly_suggestions.append("Compost, Vermicompost, or Cow manure (instead of Urea)")
+    if P < 40:
+        soil_condition.append("Low Phosphorus detected")
+        eco_friendly_suggestions.append("Bone meal or Rock phosphate (instead of DAP)")
+    if K < 40:
+        soil_condition.append("Low Potassium detected")
+        eco_friendly_suggestions.append("Wood ash or Banana peel compost (instead of MOP)")
+
+    if not soil_condition:
+        return "Soil is balanced. No specific fertilizer needed.", "", ""
+    else:
+        soil_msg = "Soil condition: " + ", ".join(soil_condition) + "."
+        eco_msg = "Recommended eco-friendly fertilizers: " + ", ".join(eco_friendly_suggestions) + "."
+        return soil_msg, eco_msg, ""
+
+
+# Ensure predict_crop is defined, possibly from earlier cells or define it here if not
+def predict_crop(model, N, P, K, temperature, humidity, ph, rainfall, feature_names):
+    sample = pd.DataFrame([[N,P,K,temperature,humidity,ph,rainfall]],
+                              columns=feature_names)
+    if model:
+        if isinstance(model, TabNetClassifier):
+            # TabNet predict expects numpy array and returns encoded labels
+            # Apply StandardScaler if it was used during TabNet training
+            if 'scaler' in globals(): # Assuming scaler was defined in f26e0151 or 4abfaaaf
+                sample_scaled = globals()['scaler'].transform(sample.values)
+                pred_encoded = model.predict(sample_scaled)
+            else:
+                pred_encoded = model.predict(sample.values)
+
+            if 'le' in globals():
+                return le.inverse_transform(pred_encoded)[0] # Inverse transform to get crop name
+            else:
+                return f"Encoded Crop ID: {pred_encoded[0]}"
+        else: # Assumed to be RandomForestClassifier or similar sklearn model
+            crop = model.predict(sample)[0]
+            return crop
+    else:
+        return "Model not loaded, cannot predict."
+
+
+# --- NEW SUSTAINABILITY MODULE CODE ---START ---
+
+# 1. Create a dictionary with sustainability factors (water usage, chemical usage, emission) for crops
+# Values are illustrative impact scores (0-100), higher means higher negative impact.
+crop_sustainability_factors = {
+    'Rice': {'water': 70, 'chemical': 50, 'emission': 40},
+    'Wheat': {'water': 40, 'chemical': 30, 'emission': 20},
+    'Maize': {'water': 35, 'chemical': 25, 'emission': 20},
+    'Cotton': {'water': 80, 'chemical': 60, 'emission': 50},
+    'Millets': {'water': 10, 'chemical': 10, 'emission': 10},
+    'Pulses': {'water': 15, 'chemical': 15, 'emission': 10},
+    'Banana': {'water': 50, 'chemical': 30, 'emission': 25},
+    'Mango': {'water': 45, 'chemical': 20, 'emission': 20},
+    'Grapes': {'water': 55, 'chemical': 40, 'emission': 35},
+    'Watermelon': {'water': 60, 'chemical': 20, 'emission': 15},
+    'Muskmelon': {'water': 55, 'chemical': 18, 'emission': 12},
+    'Apple': {'water': 30, 'chemical': 25, 'emission': 20},
+    'Orange': {'water': 40, 'chemical': 20, 'emission': 18},
+    'Papaya': {'water': 40, 'chemical': 15, 'emission': 15},
+    'Coconut': {'water': 30, 'chemical': 10, 'emission': 10},
+    'Coffee': {'water': 60, 'chemical': 45, 'emission': 40},
+    'Sugarcane': {'water': 75, 'chemical': 55, 'emission': 45},
+    'Arecanut': {'water': 40, 'chemical': 20, 'emission': 15},
+    'Jute': {'water': 65, 'chemical': 30, 'emission': 25},
+    'Lentil': {'water': 15, 'chemical': 10, 'emission': 10},
+    'Blackgram': {'water': 20, 'chemical': 12, 'emission': 10},
+    'KidneyBeans': {'water': 25, 'chemical': 15, 'emission': 12},
+    'ChickPea': {'water': 18, 'chemical': 10, 'emission': 8},
+    'Pomegranate': {'water': 35, 'chemical': 20, 'emission': 15}
+
+}
+
+# 2. Write a function to calculate a Green Score
+def calculate_green_score(crop_name):
+    factors = crop_sustainability_factors.get(crop_name)
+    if factors:
+        # Assuming water, chemical, emission are penalty scores (higher is worse)
+        total_penalty = factors['water'] + factors['chemical'] + factors['emission']
+        # Normalize penalty to a max of, say, 200 for a more reasonable score range if individual max is 100
+        # If max penalty for each is 100, max total is 300. Max penalty in our illustrative data is 80+60+50 = 190 (Cotton).
+        # Let's scale it so that a sum of 150 gives 50 score, and 0 gives 100.
+        # Green Score = 100 - (total_penalty / max_possible_total_penalty * 100) / 3
+        # Or, just use the provided formula directly, implying factors are small enough.
+
+        # User's specified formula: Green Score = 100 - (water + chemical + emission)
+        # This works if the sum of (water + chemical + emission) is expected to be relatively small (e.g. max ~100).
+        # With current factor values, sum can be up to 190. So a direct subtraction will result in negative scores.
+        # Let's adapt the formula to make more sense with the illustrative penalty values (0-100 per factor).
+        # A simpler way to keep it 0-100: average the factors and subtract from 100.
+        avg_penalty = total_penalty / 3
+        green_score = max(0, round(100 - avg_penalty))
+        return green_score
+    return None # Crop not found in sustainability data
+
+# Function to determine sustainability level
+def get_sustainability_level(green_score):
+    if green_score is None:
+        return "N/A"
+    if green_score >= 80: # Adjusted thresholds for average penalty
+        return "Highly Sustainable"
+    elif green_score >= 50: # Adjusted thresholds
+        return "Moderately Sustainable"
+    else:
+        return "Less Sustainable (Review Impact)"
+
+# 4. Suggest a green alternative crop
+def suggest_green_alternative(predicted_crop):
+    # Simple mapping based on common knowledge for illustration
+    alternatives_map = {
+        'Rice': 'Millets',
+        'Cotton': 'Pulses',
+        'Sugarcane': 'Millets',
+        'Jute': 'Wheat',
+        'Maize': 'Pulses' # Maize itself is better than cotton, but can still have alternatives
+    }
+    return alternatives_map.get(predicted_crop, "No specific green alternative suggested for this crop.")
+
+# --- NEW SUSTAINABILITY MODULE CODE ---END ---
+
+
+# --- NEW Clean & Green features --- START ---
+
+# 1. Water Usage Optimization: Create a dictionary for crops with water usage levels
+# Values are illustrative (high, medium, low)
+crop_water_usage_levels = {
+    'Rice': 'High', 'Sugarcane': 'High', 'Jute': 'High', 'Banana': 'Medium',
+    'Cotton': 'High', 'Coffee': 'Medium', 'Grapes': 'Medium', 'Watermelon': 'Medium',
+    'Muskmelon': 'Medium', 'Papaya': 'Medium', 'Orange': 'Medium', 'Mango': 'Medium',
+    'Apple': 'Low', 'Wheat': 'Low', 'Maize': 'Low', 'Millets': 'Low',
+    'Pulses': 'Low', 'Lentil': 'Low', 'Blackgram': 'Low', 'KidneyBeans': 'Low',
+    'ChickPea': 'Low', 'Pomegranate': 'Low', 'MothBeans': 'Low', 'MungBean': 'Low',
+    'Arecanut': 'Medium', 'Coconut': 'Medium'
+}
+
+# --- NEW Clean & Green features --- END ---
+
+# --- NEW Renewable Energy/Sustainable Development Enhancement --- START ---
+def get_renewable_energy_advice(renewable_focus_level, predicted_crop):
+    advice = []
+    if renewable_focus_level == 'High':
+        advice.append("With a **strong focus on renewables**, consider a comprehensive solar power system to cover all farm electricity needs. This includes:")
+        advice.append("  - **Solar-powered irrigation systems**: For efficient water management, reducing operational costs significantly.")
+        advice.append("  - **Solar for farm machinery & electric vehicles**: Transitioning to electric tractors or vehicles charged by solar.")
+        advice.append("  - **Solar-powered lighting and facilities**: For barns, greenhouses, and processing units.")
+        advice.append("  - **Energy storage solutions (batteries)**: To ensure 24/7 power availability and maximize self-consumption.")
+        advice.append("  - **Selling surplus energy**: Explore grid-tied systems to feed excess electricity back to the grid for additional revenue.")
+        advice.append("  - **Utilize government subsidies and grants**: Many regions offer significant support for large-scale agricultural solar projects.")
+    elif renewable_focus_level == 'Medium':
+        advice.append("With a **medium focus on renewables**, prioritize key energy-intensive operations for solar integration:")
+        advice.append("  - **Solar water pumps**: A highly cost-effective first step for irrigation, especially in remote areas.")
+        advice.append("  - **Solar for essential farm lighting**: Reduce electricity bills for daily operations.")
+        advice.append("  - **Feasibility study for a larger solar array**: Assess the potential for a larger system to power more operations.")
+        advice.append("  - **Explore financing options**: Look into loans or leasing programs for renewable energy installations.")
+    else: # Low
+        advice.append("With a **developing interest in renewables**, start with low-cost, high-impact options:")
+        advice.append("  - **Renewable energy audit**: Identify current energy consumption and where solar can provide immediate benefits (e.g., small pumps, electric fences).")
+        advice.append("  - **Pilot solar projects**: Begin with small-scale solar chargers for tools or small off-grid applications.")
+        advice.append("  - **Research local incentives**: Understand available government support, tax credits, or subsidies for initial solar investments.")
+        advice.append("  - **Education**: Learn about the long-term benefits and maintenance of solar systems in agriculture.")
+
+    # Add crop-specific advice if applicable (example)
+    if predicted_crop in ['Rice', 'Sugarcane'] and renewable_focus_level != 'High':
+        advice.append(f"Cultivating {predicted_crop} (energy-intensive) makes renewable energy adoption particularly impactful for reducing its environmental footprint and long-term operational costs.")
+    elif predicted_crop in ['Millets', 'Pulses'] and renewable_focus_level != 'Low':
+        advice.append(f"The inherently low-input nature of {predicted_crop} aligns well with a farm focused on minimal energy use and maximizing the benefits of renewable power.")
+
+    return "\n".join(advice)
+# --- NEW Renewable Energy/Sustainable Development Enhancement --- END ---
+
+
+# Create input boxes
+N_input = widgets.FloatText(description="Nitrogen (N) (kg/ha):")
+P_input = widgets.FloatText(description="Phosphorus (P) (kg/ha):")
+K_input = widgets.FloatText(description="Potassium (K) (kg/ha):")
+temp_input = widgets.FloatText(description="Temperature (°C):")
+hum_input = widgets.FloatText(description="Humidity (%):")
+ph_input = widgets.FloatText(description="pH:")
+rain_input = widgets.FloatText(description="Rainfall (mm):")
+
+# NEW Renewable Energy Focus Input
+renewable_energy_input = widgets.Dropdown(
+    options=['Low', 'Medium', 'High'],
+    value='Medium',
+    description='Renewable Energy Focus:',
+)
+
+# Re-added: model_selection_dropdown for user choice
+model_selection_dropdown = widgets.Dropdown(
+    options=[('Random Forest', 'RF'), ('TabNet', 'TN')],
+    value='RF',
+    description='Select Model:',
+)
+
+predict_button = widgets.Button(description="Recommend", button_style='success')
+
+output = widgets.Output()
+
+def on_button_click(b):
+    with output:
+        clear_output(wait=True) # Clear and wait for new output to be rendered smoothly
+
+        # Get the selected model type immediately at the start of the function
+        selected_model_type = model_selection_dropdown.value
+
+        try: # Added try-except block to catch and display errors
+            # Add checks for crucial global variables
+            if 'le' not in globals():
+                print("Error: LabelEncoder (le) not found. Please ensure data preprocessing cells are run.")
+                return
+            if 'scaler' not in globals():
+                print("Error: StandardScaler (scaler) not found. Please ensure data preprocessing cells are run.")
+                return
+            if not rf_model_loaded and not tabnet_model_loaded:
+                print("Error: No models (Random Forest or TabNet) are loaded. Please check model loading cells.")
+                return
+            if selected_model_type == 'RF' and not rf_model_loaded:
+                print("Error: Random Forest model selected but not loaded. Please check model loading cells.")
+                return
+            if selected_model_type == 'TN' and not tabnet_model_loaded:
+                print("Error: TabNet model selected but not loaded. Please check model loading cells.")
+                return
+
+            print(f"[DEBUG] Selected Model Type: {selected_model_type}")
+            print(f"[DEBUG] rf_model_loaded: {rf_model_loaded is not None}, tabnet_model_loaded: {tabnet_model_loaded is not None}")
+            print(f"[DEBUG] explainer_rf: {explainer_rf is not None}, explainer_tabnet: {explainer_tabnet is not None}")
+
+            # Read user input
+            N = N_input.value
+            P = P_input.value
+            K = K_input.value
+            temperature = temp_input.value
+            humidity = hum_input.value
+            ph = ph_input.value
+            rainfall = rain_input.value
+            renewable_focus = renewable_energy_input.value # Get renewable energy focus
+
+            # Define feature names for consistent input to predict_crop
+            feature_names = ['Nitrogen','Phosphorus','Potassium','Temperature','Humidity','pH_Value','Rainfall']
+
+            # Prepare input dataframe with correct column names for SHAP
+            sample_df = pd.DataFrame([[N,P,K,temperature,humidity,ph,rainfall]],
+                                  columns=feature_names)
+
+            # Get Fertilizer Advice (common for both models)
+            soil_condition_msg, eco_friendly_fertilizer_msg, _ = recommend_fertilizer(N,P,K)
+            detected_region = assign_region(temperature, rainfall, humidity)
+            estimated_yield = estimate_yield(N, P, K, rainfall)
+
+            # --- NEW Soil Health Monitoring ---
+            soil_health_warnings = []
+            if N > 100: # Example threshold for high Nitrogen
+                soil_health_warnings.append("High Nitrogen detected. Excessive N can lead to groundwater pollution and soil acidity.")
+            if ph < 5.0: # Example threshold for acidic soil
+                soil_health_warnings.append(f"Low pH ({ph:.1f}) detected. Soil is acidic, which can affect nutrient availability for many crops.")
+            elif ph > 8.0: # Example threshold for alkaline soil
+                soil_health_warnings.append(f"High pH ({ph:.1f}) detected. Soil is alkaline, which can also affect nutrient availability.")
+
+            # Initialize variables for the predicted crop and its properties
+            predicted_crop = "N/A"
+            profit = "N/A"
+            suitability_msg = "N/A"
+            suitability_alternatives = ""
+            green_alternative = ""
+            water_usage = "Unknown"
+            water_warning = ""
+            green_score_msg = ""
+            sustainability_level_msg = ""
+            shap_explanation_html = ""
+
+            # Output structure
+            output_sections = []
+
+            if selected_model_type == 'RF':
+                model_name = "Random Forest"
+                if rf_model_loaded:
+                    predicted_crop = predict_crop(rf_model_loaded, N, P, K, temperature, humidity, ph, rainfall, feature_names)
+                    profit = calculate_profit(estimated_yield, predicted_crop, crop_price)
+                    suitability, suitability_msg = check_region_suitability(predicted_crop, detected_region)
+                    if not suitability:
+                        suitability_alternatives = suggest_alternatives(predicted_crop, detected_region)
+
+                    # Sustainability and Green features
+                    green_alternative = suggest_green_alternative(predicted_crop)
+                    water_usage = crop_water_usage_levels.get(predicted_crop, 'Unknown')
+                    if water_usage == 'High' and rainfall < 75:
+                        water_warning = f"⚠️ Warning: Predicted crop '{predicted_crop}' has high water requirements, but rainfall is low ({rainfall:.1f}mm). Consider low-water alternatives like Millets or Pulses."
+
+                    green_score = calculate_green_score(predicted_crop)
+                    if green_score is not None:
+                        sustainability_level = get_sustainability_level(green_score)
+                        green_score_msg = f"Green Score: {green_score}/100"
+                        sustainability_level_msg = f"Sustainability Level: {sustainability_level}"
+
+                    output_sections.append(widgets.HTML(f"<h3><font color='#1f77b4'>🌱 Predicted Crop ({model_name}):</font> {predicted_crop}</h3>"))
+                    if green_alternative != "No specific green alternative suggested for this crop.":
+                        output_sections.append(widgets.HTML(f"<b>🌿 Green Alternative Crop:</b> {green_alternative}"))
+                    output_sections.append(widgets.HTML(f"<b>🌍 Detected Region:</b> {detected_region} "))
+                    output_sections.append(widgets.HTML(f"<b>✨ Region Suitability:</b> {suitability_msg}</b>"))
+                    if suitability_alternatives:
+                        output_sections.append(widgets.HTML(f"<i>{suitability_alternatives}</i>"))
+                    output_sections.append(widgets.HTML(f"<b>💰 Estimated Yield:</b> {estimated_yield} tons/acre"))
+                    output_sections.append(widgets.HTML(f"<b>💵 Estimated Profit:</b> ₹ {profit} per acre"))
+
+                    output_sections.append(widgets.HTML("<h3><font color='#2ca02c'>🧪 Fertilizer & Soil Health Advice:</font></h3>"))
+                    output_sections.append(widgets.HTML(f"<b>  Soil Condition:</b> {soil_condition_msg}"))
+                    output_sections.append(widgets.HTML(f"<b>  Eco-friendly Fertilizers:</b> {eco_friendly_fertilizer_msg}"))
+                    if soil_health_warnings:
+                        output_sections.append(widgets.HTML("<b>⚠️ Soil Health Warnings:</b>"))
+                        for warning in soil_health_warnings:
+                            output_sections.append(widgets.HTML(f"  - {warning}"))
+                    else:
+                        output_sections.append(widgets.HTML("<b>✅ Soil Health:</b> Looks good based on N and pH levels."))
+
+                    # User requested to remove these sections
+                    # output_sections.append(widgets.HTML("<h3><font color='#ff7f0e'>🌳 Green & Clean Sustainability:</font></h3>"))
+                    # output_sections.append(widgets.HTML(f"<b>💧 Water Usage Level:</b> {water_usage}"))
+                    # if water_warning:
+                    #     output_sections.append(widgets.HTML(f"<i>{water_warning}</i>"))
+                    # if green_score_msg:
+                    #     output_sections.append(widgets.HTML(f"  {green_score_msg}"))
+                    # if sustainability_level_msg:
+                    #     output_sections.append(widgets.HTML(f"  {sustainability_level_msg}"))
+                    # else:
+                    #      output_sections.append(widgets.HTML(f"Data not available for {predicted_crop}"))
+
+                    # output_sections.append(widgets.HTML("<h3><font color='#800080'>⚡️ Renewable Energy & Sustainable Development Advice:</font></h3>"))
+                    # output_sections.append(widgets.HTML(get_renewable_energy_advice(renewable_focus, predicted_crop).replace('\n', '<br>')))
+
+                    # SHAP Explanation
+                    if explainer_rf and 'le' in globals():
+                        output_sections.append(widgets.HTML(f"<h3><font color='#9467bd'>🔍 SHAP Explanation for {model_name}:</font></h3>"))
+                        try:
+                            shap_values_output = explainer_rf.shap_values(sample_df)
+                            predicted_class_idx = le.transform([predicted_crop])[0]
+
+                            shap_values_for_plot = None
+                            expected_value_for_plot = None
+
+                            if isinstance(shap_values_output, list):
+                                if predicted_class_idx < len(shap_values_output):
+                                    shap_values_for_plot = shap_values_output[predicted_class_idx]
+                                else:
+                                    print(f"[DEBUG] RF SHAP: Predicted class index {predicted_class_idx} out of bounds for SHAP values list (length {len(shap_values_output)}). Using the first class's SHAP values.")
+                                    shap_values_for_plot = shap_values_output[0]
+                            elif isinstance(shap_values_output, np.ndarray):
+                                if shap_values_output.ndim == 2:
+                                    if shap_values_output.shape[0] == 1:
+                                        shap_values_for_plot = shap_values_output[0]
+                                    elif shap_values_output.shape[0] == len(le.classes_):
+                                        shap_values_for_plot = shap_values_output[predicted_class_idx]
+                                    else:
+                                        print(f"[DEBUG] RF SHAP: Unexpected 2D SHAP values shape: {shap_values_output.shape}. Attempting to flatten.")
+                                        shap_values_for_plot = shap_values_output.flatten()
+                                elif shap_values_output.ndim == 3:
+                                    if shap_values_output.shape[0] == 1 and shap_values_output.shape[2] == len(le.classes_):
+                                        shap_values_for_plot = shap_values_output[0, :, predicted_class_idx]
+                                    elif shap_values_output.shape[0] == len(le.classes_) and shap_values_output.shape[1] == 1:
+                                        shap_values_for_plot = shap_values_output[predicted_class_idx, 0, :]
+                                    else:
+                                        print(f"[DEBUG] RF SHAP: Unexpected 3D SHAP values shape for single sample: {shap_values_output.shape}. Attempting to flatten.")
+                                        shap_values_for_plot = shap_values_output.flatten()
+                                else:
+                                    print(f"[DEBUG] RF SHAP: Unexpected SHAP values ndim: {shap_values_output.ndim}. Attempting to flatten.")
+                                    shap_values_for_plot = shap_values_output.flatten()
+                            else:
+                                print(f"[DEBUG] RF SHAP: SHAP values returned in an unexpected format (not list or numpy array): {type(shap_values_output)}")
+
+                            if shap_values_for_plot is not None and shap_values_for_plot.ndim > 1:
+                                shap_values_for_plot = shap_values_for_plot.flatten()
+
+                            if isinstance(explainer_rf.expected_value, np.ndarray):
+                                if predicted_class_idx < len(explainer_rf.expected_value):
+                                    expected_value_for_plot = explainer_rf.expected_value[predicted_class_idx]
+                                else:
+                                    print(f"[DEBUG] RF SHAP: Predicted class index {predicted_class_idx} out of bounds for explainer.expected_value (length {len(explainer_rf.expected_value)}). Using the first expected value.")
+                                    expected_value_for_plot = explainer_rf.expected_value[0]
+                            else:
+                                expected_value_for_plot = explainer_rf.expected_value
+
+                            print(f"[DEBUG] RF SHAP: shap_values_for_plot type: {type(shap_values_for_plot)}, shape: {getattr(shap_values_for_plot, 'shape', 'N/A')}")
+                            print(f"[DEBUG] RF SHAP: expected_value_for_plot type: {type(expected_value_for_plot)}, value: {expected_value_for_plot}")
+
+                            if shap_values_for_plot is not None and expected_value_for_plot is not None:
+                                # Create an Output widget to capture the plot
+                                plot_output = widgets.Output()
+                                with plot_output:
+                                    fig = shap.force_plot(
+                                        expected_value_for_plot,
+                                        shap_values_for_plot,
+                                        sample_df.iloc[0],
+                                        matplotlib=True,
+                                        show=False
+                                    )
+                                    plt.show(fig)
+                                    plt.close(fig)
+                                output_sections.append(plot_output)
+                            else:
+                                output_sections.append(widgets.HTML("<i>Could not generate SHAP force plot due to missing values.</i>"))
+                        except Exception as e: # Catch errors during SHAP calculation/plotting
+                            output_sections.append(widgets.HTML(f"<b><font color='red'>ERROR during RF SHAP explanation: {e}</font></b>"))
+                            import traceback
+                            output_sections.append(widgets.HTML(f"<pre>{traceback.format_exc()}</pre>"))
+
+                    else:
+                        output_sections.append(widgets.HTML(f"<i>SHAP explainer not available for {model_name}. Cannot show explanation.</i>"))
+                else:
+                    output_sections.append(widgets.HTML(f"<font color='red'>{model_name} model not loaded.</font>"))
+
+            elif selected_model_type == 'TN':
+                model_name = "TabNet"
+                if tabnet_model_loaded:
+                    predicted_crop = predict_crop(tabnet_model_loaded, N, P, K, temperature, humidity, ph, rainfall, feature_names)
+                    profit = calculate_profit(estimated_yield, predicted_crop, crop_price)
+                    suitability, suitability_msg = check_region_suitability(predicted_crop, detected_region)
+                    if not suitability:
+                        suitability_alternatives = suggest_alternatives(predicted_crop, detected_region)
+
+                    # Sustainability and Green features
+                    green_alternative = suggest_green_alternative(predicted_crop)
+                    water_usage = crop_water_usage_levels.get(predicted_crop, 'Unknown')
+                    if water_usage == 'High' and rainfall < 75:
+                        water_warning = f"⚠️ Warning: Predicted crop '{predicted_crop}' has high water requirements, but rainfall is low ({rainfall:.1f}mm). Consider low-water alternatives like Millets or Pulses."
+
+                    green_score = calculate_green_score(predicted_crop)
+                    if green_score is not None:
+                        sustainability_level = get_sustainability_level(green_score)
+                        green_score_msg = f"Green Score: {green_score}/100"
+                        sustainability_level_msg = f"Sustainability Level: {sustainability_level}"
+
+                    output_sections.append(widgets.HTML(f"<h3><font color='#1f77b4'>🌱 Predicted Crop ({model_name}):</font> {predicted_crop}</h3>"))
+                    if green_alternative != "No specific green alternative suggested for this crop.":
+                        output_sections.append(widgets.HTML(f"<b>🌿 Green Alternative Crop:</b> {green_alternative}"))
+                    output_sections.append(widgets.HTML(f"<b>🌍 Detected Region:</b> {detected_region}"))
+                    output_sections.append(widgets.HTML(f"<b>✨ Region Suitability:</b> {suitability_msg}</b>"))
+                    if suitability_alternatives:
+                        output_sections.append(widgets.HTML(f"<i>{suitability_alternatives}</i>"))
+                    output_sections.append(widgets.HTML(f"<b>💰 Estimated Yield:</b> {estimated_yield} tons/acre"))
+                    output_sections.append(widgets.HTML(f"<b>💵 Estimated Profit:</b> ₹ {profit} per acre"))
+
+                    output_sections.append(widgets.HTML("<h3><font color='#2ca02c'>🧪 Fertilizer & Soil Health Advice:</font></h3>"))
+                    output_sections.append(widgets.HTML(f"<b>  Soil Condition:</b> {soil_condition_msg}"))
+                    output_sections.append(widgets.HTML(f"<b>  Eco-friendly Fertilizers:</b> {eco_friendly_fertilizer_msg}"))
+                    if soil_health_warnings:
+                        output_sections.append(widgets.HTML("<b>⚠️ Soil Health Warnings:</b>"))
+                        for warning in soil_health_warnings:
+                            output_sections.append(widgets.HTML(f"  - {warning}"))
+                    else:
+                        output_sections.append(widgets.HTML("<b>✅ Soil Health:</b> Looks good based on N and pH levels."))
+
+                    # User requested to remove these sections
+                    # output_sections.append(widgets.HTML("<h3><font color='#ff7f0e'>🌳 Green & Clean Sustainability:</font></h3>"))
+                    # output_sections.append(widgets.HTML(f"<b>💧 Water Usage Level:</b> {water_usage}"))
+                    # if water_warning:
+                    #     output_sections.append(widgets.HTML(f"<i>{water_warning}</i>"))
+                    # if green_score_msg:
+                    #     output_sections.append(widgets.HTML(f"  {green_score_msg}"))
+                    # if sustainability_level_msg:
+                    #     output_sections.append(widgets.HTML(f"  {sustainability_level_msg}"))
+                    # else:
+                    #      output_sections.append(widgets.HTML(f"Data not available for {predicted_crop}"))
+
+                    # output_sections.append(widgets.HTML("<h3><font color='#800080'>⚡️ Renewable Energy & Sustainable Development Advice:</font></h3>"))
+                    # output_sections.append(widgets.HTML(get_renewable_energy_advice(renewable_focus, predicted_crop).replace('\n', '<br>')))
+
+                    # SHAP Explanation
+                    if explainer_tabnet and tabnet_model_loaded and 'le' in globals():
+                        output_sections.append(widgets.HTML(f"<h3><font color='#9467bd'>🔍 SHAP Explanation for {model_name}:</font></h3>"))
+                        output_sections.append(widgets.HTML("<i>Calculating SHAP values for TabNet... This may take a moment.</i>"))
+
+                        try:
+                            # Scale the input sample for TabNet's SHAP explainer
+                            if 'scaler' in globals():
+                                sample_scaled_for_shap = globals()['scaler'].transform(sample_df.values)
+                            else:
+                                sample_scaled_for_shap = sample_df.values
+
+                            shap_values_tabnet = explainer_tabnet.shap_values(sample_scaled_for_shap)
+
+                            predicted_class_encoded = le.transform([predicted_crop])[0]
+
+                            shap_values_for_plot = None
+
+                            if isinstance(shap_values_tabnet, list):
+                                if predicted_class_encoded < len(shap_values_tabnet):
+                                    shap_values_for_plot = shap_values_tabnet[predicted_class_encoded]
+                                else:
+                                    print(f"[DEBUG] TN SHAP: Predicted class index {predicted_class_encoded} out of bounds for SHAP values list (length {len(shap_values_tabnet)}). Using the first class's SHAP values.")
+                                    shap_values_for_plot = shap_values_tabnet[0] # Fallback
+                            elif isinstance(shap_values_tabnet, np.ndarray) and shap_values_tabnet.ndim == 3:
+                                # Assuming shape (1, n_features, n_classes) or (n_classes, 1, n_features)
+                                if shap_values_tabnet.shape[0] == 1 and shap_values_tabnet.shape[2] == len(le.classes_):
+                                    shap_values_for_plot = shap_values_tabnet[0, :, predicted_class_encoded]
+                                elif shap_values_tabnet.shape[0] == len(le.classes_) and shap_values_tabnet.shape[1] == 1:
+                                    shap_values_for_plot = shap_values_tabnet[predicted_class_encoded, 0, :]
+                                else:
+                                    print(f"[DEBUG] TN SHAP: Unexpected 3D SHAP values shape: {shap_values_tabnet.shape}. Trying to extract for class {predicted_class_encoded}.")
+                                    shap_values_for_plot = shap_values_tabnet[0, :, predicted_class_encoded] # Best guess
+                            elif isinstance(shap_values_tabnet, np.ndarray) and shap_values_tabnet.ndim == 2: # Binary classification or single output, or already class-specific
+                                if shap_values_tabnet.shape[0] == 1 and shap_values_tabnet.shape[1] == len(feature_names): # Expected for one sample, one class
+                                    shap_values_for_plot = shap_values_tabnet[0, :]
+                                elif shap_values_tabnet.shape[0] == len(le.classes_): # If already class-indexed (e.g. from explainer.shap_values(X)[class_idx])
+                                     shap_values_for_plot = shap_values_tabnet[predicted_class_encoded, :]
+                                else:
+                                    print(f"[DEBUG] TN SHAP: Unexpected 2D SHAP values shape: {shap_values_tabnet.shape}. Attempting to flatten.")
+                                    shap_values_for_plot = shap_values_tabnet.flatten() # Fallback
+                            else:
+                                print(f"[DEBUG] TN SHAP: Unexpected SHAP values format for TabNet: {type(shap_values_tabnet)} with dimension {getattr(shap_values_tabnet, 'ndim', 'N/A')}")
+                                shap_values_for_plot = shap_values_tabnet.flatten() # Fallback
+
+                            # Ensure shap_values_for_plot is 1D
+                            if shap_values_for_plot is not None and shap_values_for_plot.ndim > 1:
+                                shap_values_for_plot = shap_values_for_plot.flatten()
+
+                            expected_value_for_plot = explainer_tabnet.expected_value[predicted_class_encoded]
+
+                            print(f"[DEBUG] TN SHAP: shap_values_for_plot type: {type(shap_values_for_plot)}, shape: {getattr(shap_values_for_plot, 'shape', 'N/A')}")
+                            print(f"[DEBUG] TN SHAP: expected_value_for_plot type: {type(expected_value_for_plot)}, value: {expected_value_for_plot}")
+
+                            if shap_values_for_plot is not None and expected_value_for_plot is not None:
+                                # Create an Output widget to capture the plot
+                                plot_output = widgets.Output()
+                                with plot_output:
+                                    fig = shap.force_plot(
+                                        expected_value_for_plot,
+                                        shap_values_for_plot,
+                                        sample_df.iloc[0], # Use original sample_df for feature names
+                                        matplotlib=True,
+                                        show=False,
+                                        feature_names=feature_names
+                                    )
+                                    plt.show(fig)
+                                    plt.close(fig)
+                                output_sections.append(plot_output)
+                            else:
+                                output_sections.append(widgets.HTML("<i>Could not generate SHAP force plot due to missing values.</i>"))
+                        except Exception as e: # Catch errors during SHAP calculation/plotting
+                            output_sections.append(widgets.HTML(f"<b><font color='red'>ERROR during TabNet SHAP explanation: {e}</font></b>"))
+                            import traceback
+                            output_sections.append(widgets.HTML(f"<pre>{traceback.format_exc()}</pre>"))
+                    else:
+                        output_sections.append(widgets.HTML(f"<i>SHAP explainer not available for {model_name}. Cannot show explanation.</i>"))
+                else:
+                    output_sections.append(widgets.HTML(f"<font color='red'>{model_name} model not loaded.</font>"))
+
+            # Display all collected output sections
+            display(widgets.VBox(output_sections))
+
+        except Exception as e:
+            display(widgets.HTML(f"<b><font color='red'>An unexpected error occurred: {e}</font></b>"))
+            import traceback
+            display(widgets.HTML(f"<pre>{traceback.format_exc()}</pre>"))
+
+predict_button.on_click(on_button_click)
+
+display(
+    widgets.VBox([
+        widgets.HTML("<h2>🌾 Crop & Fertilizer Recommendation System</h2>"),
+        widgets.HTML("<h3>Input Current Soil & Weather Conditions:</h3>"),
+        N_input, P_input, K_input,
+        temp_input, hum_input, ph_input, rain_input,
+        widgets.HTML("<h3>Select Preferences:</h3>"),
+        #renewable_energy_input, # NEW INPUT
+        model_selection_dropdown,
+        predict_button,
+        widgets.HTML("<h3>Recommendation Output:</h3>"),
+        output
+    ])
+)
+
+# Programmatically set inputs and trigger the recommendation for immediate display
+try:
+    # Set sample values for the input widgets
+    N_input.value = 80.0
+    P_input.value = 50.0
+    K_input.value = 40.0
+    temp_input.value = 28.0
+    hum_input.value = 70.0
+    ph_input.value = 7.0
+    rain_input.value = 150.0
+
+    # Set the desired model
+    model_selection_dropdown.value = 'RF' # 'RF' for Random Forest, 'TN' for TabNet
+
+    # Programmatically trigger the button click event
+    predict_button.click()
+except Exception as e:
+    print(f"Error triggering initial recommendation: {e}")
