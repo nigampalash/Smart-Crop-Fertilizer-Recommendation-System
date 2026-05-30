@@ -1,0 +1,29 @@
+import matplotlib.pyplot as plt
+import numpy as np
+
+# Ensure rf_accuracy and tabnet_accuracy are available from previous cells
+# If they are not, this cell might throw an error or show placeholder values.
+
+models = ['Random Forest', 'TabNet']
+accuracies = [rf_accuracy, tabnet_accuracy]
+
+plt.figure(figsize=(10, 7)) # Increased figure size for better readability
+
+# Define colors for the bars
+colors = ['#1f77b4', '#ff7f0e'] # Distinct colors for each model
+
+# Create the bar chart
+plt.bar(models, accuracies, color=colors, edgecolor='black', linewidth=0.8)
+
+plt.xlabel('Model', fontsize=12)
+plt.ylabel('Accuracy', fontsize=12)
+plt.title('Model Accuracy Comparison: Random Forest vs. TabNet', fontsize=14)
+plt.ylim(min(accuracies) - 0.02, max(accuracies) + 0.02) # Adjusted y-axis limits for better visibility
+
+# Add accuracy values on top of the bars
+for i, accuracy in enumerate(accuracies):
+    plt.text(i, accuracy + 0.005, f'{accuracy:.4f}', ha='center', va='bottom', fontsize=10)
+
+plt.grid(axis='y', linestyle='--', alpha=0.7) # Add a grid for easier comparison
+plt.tight_layout() # Adjust layout to prevent labels from overlapping
+plt.show() # Display the plot
