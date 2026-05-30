@@ -1,0 +1,65 @@
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+import os
+# shutil is no longer needed as we are not copying from Drive
+from sklearn.preprocessing import LabelEncoder
+
+# --- Load data ---
+file_name = 'Crop_Recommendation.csv'
+local_file_path = f'/content/{file_name}' # Path if copied to /content/
+drive_file_path = f'/content/drive/MyDrive/{file_name}' # Direct path in Google Drive
+
+try:
+    data = None
+    if os.path.exists(local_file_path):
+        data = pd.read_csv(local_file_path)
+        print(f"Dataset loaded successfully from: {local_file_path}")
+    elif os.path.exists(drive_file_path):
+        data = pd.read_csv(drive_file_path)
+        print(f"Dataset loaded successfully directly from Google Drive: {drive_file_path}")
+    else:
+        raise FileNotFoundError(f"Error: '{file_name}' not found at either '{local_file_path}' or '{drive_file_path}'. Please ensure it's in your Google Drive (MyDrive) and that the drive is mounted.")
+except FileNotFoundError as e:
+    print(f"Detailed error: {e}")
+    raise
+except Exception as e:
+    print(f"Error loading dataset: {e}")
+    raise
+
+# --- Prepare X and y ---
+X = data.drop('Crop', axis=1)
+y = data['Crop']
+
+# --- Split data ---
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+
+print("Training Size:", X_train.shape)
+print("Testing Size:", X_test.shape)
+
+# --- Encode target labels for TabNet and consistent use ---
+le = LabelEncoder()
+y_train_encoded = le.fit_transform(y_train)
+y_test_encoded = le.transform(y_test)
+
+# --- Train Random Forest Model ---
+rf_model = RandomForestClassifier(
+    n_estimators=30,  # Reduced from 70
+    max_depth=5,      # Reduced from 7
+    min_samples_split=20, # Increased from 10
+    min_samples_leaf=10,  # Increased from 5
+    max_features='sqrt',
+    random_state=42
+)
+rf_model.fit(X_train, y_train)
+
+# --- Calculate RF accuracy and store for comparison ---
+from sklearn.metrics import accuracy_score
+rf_pred = rf_model.predict(X_test)
+rf_accuracy = accuracy_score(y_test, rf_pred)
+
+print("Random Forest model trained and 'rf_model', 'X_test', 'y_test', 'rf_accuracy' are now defined.")
+print(f"Random Forest Accuracy: {rf_accuracy}")
+
