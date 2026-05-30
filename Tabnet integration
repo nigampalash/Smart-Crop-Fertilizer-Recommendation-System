@@ -1,0 +1,60 @@
+# @title 1. Install pytorch-tabnet
+# --- NEWLY ADDED CODE ---
+!pip install pytorch-tabnet
+
+# @title 2. TabNet Model Integration
+# --- NEWLY ADDED CODE ---
+import torch
+from pytorch_tabnet.tab_model import TabNetClassifier
+from sklearn.metrics import accuracy_score
+from sklearn.preprocessing import LabelEncoder, StandardScaler # Ensure LabelEncoder and StandardScaler are available
+
+print("\n--- Training TabNet Classifier ---")
+
+# Ensure y_train and y_test are encoded for TabNet
+# Re-using 'le' (LabelEncoder) and encoded labels from previous cells (CbQr7_bDtRP7)
+if 'le' not in globals():
+    le = LabelEncoder()
+    y_train_encoded = le.fit_transform(y_train)
+    y_test_encoded = le.transform(y_test)
+
+# --- NEW: Scale numerical features for TabNet ---
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
+tabnet_model = TabNetClassifier(
+    optimizer_fn=torch.optim.Adam,
+    optimizer_params=dict(lr=2e-2),
+    scheduler_params={"step_size":50, "gamma":0.9},
+    scheduler_fn=torch.optim.lr_scheduler.StepLR,
+    mask_type='entmax',
+    # --- IMPROVED HYPERPARAMETERS ---
+    n_d=16, # Increased from default 8
+    n_a=16, # Increased from default 8
+    n_steps=4, # Increased from default 3
+    verbose=0 # Suppress verbose output during training
+)
+
+# TabNet expects numpy arrays, so convert X_train, X_test
+tabnet_model.fit(
+    X_train_scaled, y_train_encoded,
+    eval_set=[(X_test_scaled, y_test_encoded)],
+    max_epochs=200, patience=50, # Increased max_epochs and patience
+    batch_size=1024, virtual_batch_size=128
+)
+
+tabnet_pred_encoded = tabnet_model.predict(X_test_scaled)
+tabnet_accuracy = accuracy_score(y_test_encoded, tabnet_pred_encoded)
+
+print(f"TabNet Accuracy: {tabnet_accuracy}")
+
+# Update model comparison if accuracies list exists
+if 'accuracies' in globals():
+    # Find and update existing TabNet accuracy or append if not found
+    try:
+        tabnet_index = models.index('TabNet')
+        accuracies[tabnet_index] = tabnet_accuracy
+    except ValueError:
+        accuracies.append(tabnet_accuracy)
+        models.append('TabNet')
