@@ -1,0 +1,27 @@
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+import matplotlib.pyplot as plt
+
+try:
+    # Ensure tabnet_model, X_test_scaled, y_test_encoded, and le are available from previous cells
+
+    # Get predictions from the TabNet model
+    tabnet_pred_encoded = tabnet_model.predict(X_test_scaled)
+
+    # Compute confusion matrix
+    cm_tabnet = confusion_matrix(y_test_encoded, tabnet_pred_encoded, labels=tabnet_model.classes_)
+
+    # Display confusion matrix
+    fig, ax = plt.subplots(figsize=(12, 12))
+    disp_tabnet = ConfusionMatrixDisplay(confusion_matrix=cm_tabnet, display_labels=le.inverse_transform(tabnet_model.classes_))
+    disp_tabnet.plot(cmap=plt.cm.Blues, ax=ax)
+    plt.title('Confusion Matrix for TabNet Model')
+    plt.xlabel('Predicted Label')
+    plt.ylabel('True Label')
+    plt.xticks(rotation=90)
+    plt.yticks(rotation=0)
+    plt.show()
+except NameError as e:
+    print(f"Error: {e}. It appears that 'tabnet_model', 'X_test_scaled', 'y_test_encoded', or 'le' have not been defined.")
+    print("Please ensure you have executed cell '0105edda' (install pytorch-tabnet), then 'f26e0151' (data preparation), and finally '4abfaaaf' (TabNet model training) first.")
+except Exception as e:
+    print(f"An unexpected error occurred: {e}")
