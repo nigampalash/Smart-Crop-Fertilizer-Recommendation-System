@@ -1,0 +1,47 @@
+from sklearn.metrics import roc_curve, auc
+from sklearn.preprocessing import LabelBinarizer
+import matplotlib.pyplot as plt
+
+# Assuming y_test, y_test_encoded, rf_model, tabnet_model, X_test, X_test_scaled, and le are available.
+
+# 1. Binarize the true labels for multi-class ROC curve
+# Use y_test_encoded as it's already numerical and consistent with model outputs
+label_binarizer = LabelBinarizer()
+y_test_binarized = label_binarizer.fit_transform(y_test_encoded)
+n_classes = y_test_binarized.shape[1]
+
+# --- Random Forest ROC Curve ---
+# Get prediction probabilities for all classes
+rf_probs = rf_model.predict_proba(X_test)
+
+# Compute micro-average ROC curve and ROC area for Random Forest
+# .ravel() flattens the arrays to treat all class predictions as binary outcomes
+fpr_rf, tpr_rf, _ = roc_curve(y_test_binarized.ravel(), rf_probs.ravel())
+auc_rf = auc(fpr_rf, tpr_rf)
+
+print(f"Random Forest Micro-Average AUC: {auc_rf:.4f}")
+
+# --- TabNet ROC Curve ---
+# Get prediction probabilities for all classes
+tabnet_probs = tabnet_model.predict_proba(X_test_scaled)
+
+# Compute micro-average ROC curve and ROC area for TabNet
+fpr_tn, tpr_tn, _ = roc_curve(y_test_binarized.ravel(), tabnet_probs.ravel())
+auc_tn = auc(fpr_tn, tpr_tn)
+
+print(f"TabNet Micro-Average AUC: {auc_tn:.4f}")
+
+# --- Plotting the ROC Curves ---
+plt.figure(figsize=(10, 8))
+plt.plot(fpr_rf, tpr_rf, label=f'Random Forest (AUC = {auc_rf:.4f})', color='darkorange', linestyle=':')
+plt.plot([0, 1], [0, 1], 'k--', label='Chance (AUC = 0.50)') # Plot the diagonal line for reference
+plt.plot(fpr_tn, tpr_tn, label=f'TabNet (AUC = {auc_tn:.4f})', color='blue', linestyle='-')
+
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('Micro-Average Receiver Operating Characteristic (ROC) Curve Comparison')
+plt.legend(loc='lower right')
+plt.grid(True)
+plt.show()
