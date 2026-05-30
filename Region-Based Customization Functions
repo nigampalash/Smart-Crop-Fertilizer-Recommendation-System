@@ -1,0 +1,36 @@
+# @title 3. Region-Based Customization Functions
+# --- NEWLY ADDED CODE ---
+# Define crop suitability for different regions
+# This is an illustrative map; adjust with real agricultural data if available.
+region_crop_map = {
+    'Coastal': ['Coconut', 'Rice', 'Sugarcane', 'Arecanut', 'Banana'],
+    'Arid': ['MothBeans', 'MungBean', 'PigeonPeas', 'Cotton', 'Maize'],
+    'Temperate': ['Apple', 'Orange', 'Grapes', 'Pomegranate', 'Coffee'],
+    'Tropical': ['Mango', 'Papaya', 'Muskmelon', 'Watermelon', 'Jute', 'Lentil', 'Blackgram', 'KidneyBeans', 'ChickPea', 'Wheat']
+}
+
+def assign_region(temp, rainfall, humidity):
+    # Simple heuristic to assign a region
+    if temp > 30 and humidity > 70 and rainfall > 150: # High temp, high humidity, high rainfall
+        return 'Tropical'
+    elif temp < 20 and humidity > 60 and rainfall > 100: # Moderate temp, moderate humidity, good rainfall
+        return 'Temperate'
+    elif rainfall < 50 and humidity < 40 and temp > 25: # Low rainfall, low humidity, high temp
+        return 'Arid'
+    elif humidity > 80 and rainfall > 200: # Very high humidity and rainfall (coastal/monsoon heavy)
+        return 'Coastal'
+    else:
+        return 'Temperate' # Default or mixed conditions
+
+def check_region_suitability(predicted_crop, region):
+    if region in region_crop_map and predicted_crop in region_crop_map[region]:
+        return True, f"'{predicted_crop}' is suitable for a '{region}' region."
+    else:
+        return False, f"'{predicted_crop}' might not be ideal for a '{region}' region."
+
+def suggest_alternatives(predicted_crop, region):
+    if region in region_crop_map:
+        alternatives = [crop for crop in region_crop_map[region] if crop != predicted_crop]
+        if alternatives:
+            return f"Consider alternatives like: {', '.join(alternatives)}."
+    return "No specific regional alternatives suggested."
